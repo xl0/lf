@@ -1,9 +1,11 @@
 #!/usr/bin/env python2.7
 
 import os
+import sys
 import string
 from Bio import Entrez
 Entrez.email = 'alexey.zaytsev@gmail.com'
+import urllib2
 
 from collections import defaultdict
 
@@ -12,14 +14,29 @@ import unicodedata
 import re
 import datetime
 import time
-
+import gc
+import cgi
+import cgitb; cgitb.enable()
 
 article_half_life = 365 * 2
+
+global chunk_size
+chunk_size = 5000
+global search_chunk_size
+search_chunk_size = 100000
+global pmid_cache_file
+pmid_cache_file = 'pmid_cache.json'
+
 cachedir = "./cache/"
 def mkfilename(pmid):
 	return cachedir + pmid + ".json"
 
 rec = re.compile('[\w\.]+@[\w\.]$')
+
+def write(string):
+	sys.stdout.write(string)
+#	sys.stdout.write('')
+	sys.stdout.flush()
 
 # Some lab entries start with mis-parsed garbage, remove it.
 # Also, remove accents/umlauts/etc.
@@ -33,7 +50,7 @@ def sanitize_lab_name(lab):
 	# Strip non-alphas before the name. We loose a few bits, but get
 	# rid of a lot of crap.
 	m = 0
-	while not str.isalpha(lab[m]) and m < len(lab):
+	while m < len(lab) and not str.isalpha(lab[m]):
 		m += 1
 	lab = lab[m:]
 
@@ -102,17 +119,38 @@ def get_lab_list(entry):
 				pass
 #				print "Looks good, ", len(entry['MedlineCitation']['Article']['AuthorList'])
 		else:
-			"Wtf? Medline, but not Article?"
+			pass
+#			print "Wtf? Medline, but not Article?"
 #		print 'An article!'
 #	elif entry.has_key('BookDocument'):
 #		print "A book!"
 
 	return lab_list
 
+def month_to_int(month):
+	return{
+		'Jan' : 1,
+		'Feb' : 2,
+		'Mar' : 3,
+		'Apr' : 4,
+		'May' : 5,
+		'Jun' : 6,
+		'Jul' : 7,
+		'Aug' : 8,
+		'Sep' : 9, 
+		'Oct' : 10,
+		'Nov' : 11,
+		'Dec' : 12
+	}[month]
+
 def get_citation_date(entry):
 	citation = entry['MedlineCitation']
 	day = int(citation['DateCreated']['Day'])
-	month = int(citation['DateCreated']['Month'])
+	try:
+		month = int(citation['DateCreated']['Month'])
+	except ValueError:
+		month = month_to_int(citation['DateCreated']['Month'])
+
 	year = int(citation['DateCreated']['Year'])
 
 	return (year, month, day)
@@ -134,29 +172,70 @@ def fetch_me_data(record_list):
 			need_to_fetch.append(pmid)
 
 	if len(need_to_fetch) > 0:
-		print "To fetch: ", need_to_fetch
-		handle = Entrez.efetch(db="pubmed", id=need_to_fetch, rettype="summary", version="2.0")
-		data_list = Entrez.read(handle)
+		num_records = len(need_to_fetch)
+		write("I need to consult the literature (%d of %d articles new to me)...\n" % (num_records, len(record_list)))
+		n = 0
+		while True:
+			try:
+				handle = Entrez.epost(db='pubmed', id=','.join(need_to_fetch))
+			except urllib2.HTTPError:
+				n += 1
+				if n > 3:
+					write('NCBI is not happy with us\n')
+					False
+				write('Ugh\n')
+				continue
+			break
+
+		result = Entrez.read(handle)
 		handle.close()
+		del handle
+		webenv = result['WebEnv']
+		query_key = result['QueryKey']
 
+		for start in range(0, num_records, chunk_size):
+			end = min(start+chunk_size, num_records)
+			write('Getting abstracts %d-%d ... ' % (start, end))
+			n = 0
+			while True:
+				try:
+					handle = Entrez.efetch(db="pubmed", rettype="summary", version="2.0",
+							retstart=start, retmax=chunk_size, webenv=webenv, query_key=query_key)
+				except urllib2.HTTPError:
+					n += 1
+					if n > 3:
+						write('NCBI is not happy with us\n')
+						False
+					write('Ugh\n')
+					continue
+				break
 
-		for entry in data_list:
-			if entry.has_key('MedlineCitation'):
-				pmid = entry['MedlineCitation']['PMID']
-			elif entry.has_key('BookDocument'):
-				pmid = entry['BookDocument']['PMID']
-			else:
-				raise KeyError
-
-			print "Saving entry ", pmid
-			filename = cachedir + "/" + pmid + ".json"
-			assert(not os.path.exists(filename))
-			handle = open(filename, 'w+')
-
-			handle.write(json.dumps(entry, sort_keys=True, indent=4))
+			data_list = Entrez.read(handle)
 			handle.close()
+			del handle
+			write('Done. Memorizing them...')
 
+			for entry in data_list:
+				if entry.has_key('MedlineCitation'):
+					pmid = entry['MedlineCitation']['PMID']
+				elif entry.has_key('BookDocument'):
+					pmid = entry['BookDocument']['PMID']
+				else:
+					raise KeyError
 
+				filename = cachedir + "/" + pmid + ".json"
+				assert(not os.path.exists(filename))
+				handle = open(filename, 'w+')
+				json_string = json.dumps(entry, sort_keys=True, indent=4)
+				handle.write(json_string)
+				del json_string
+				handle.close()
+				del handle
+			del data_list
+			write("Done!\n")
+	else:
+		write('And I\'ve already read all of them!\n')
+		
 
 replacement_dict = [
 	('[De]ept\.?', 'Department'),
@@ -167,9 +246,9 @@ replacement_dict = [
 def heuristic_fix(string, dictionary):
 	for entry in dictionary:
 		n_string = re.sub(entry[0], entry[1], string)
-		if not n_string == string:
-			print string
-			print n_string
+#		if not n_string == string:
+#			print string
+#			print n_string
 		string = n_string
 	return string
 
@@ -225,53 +304,148 @@ def merge_labs(lab_dict):
 
 #		print lab_key, lab_dict[lab_key]
 
+def main():
+	form = cgi.FieldStorage() # instantiate only once!
+	request = form.getfirst('q', None)
+
+	# Avoid script injection escaping the user input
+	request = cgi.escape(request)
+
+	pmid_cache = {}
+	if os.path.exists(pmid_cache_file):
+		h = open(pmid_cache_file)
+		pmid_cache = json.load(h)
+		h.close()
+		del h
+
+	write("Content-Type: text/html\n\n")
+
+	h = open('index.html')
+	index = h.read()
+	index = re.sub("name=q value=\"\"", "name=q value=\"%s\"" % request, index)
+
+	write(index)
 
 
+	write("<html><body>\n")
+	write("<p>Meditating on the request...</p>\n")
+	write("<pre>\n")
 
-def pmid_list_get():
-	h = open('files.txt')
-	for line in h.readlines():
-#		print line
-		pmid = line.split('.')
+
+	if pmid_cache.has_key(request):
+		write('Query found in cache.\n')
+		pmid_list = pmid_cache[request]
+	else:		
+		write('Let me ask NCBI...')
+
+		# Do the request
+		n = 0
+		while True:
+			try:
+				handle = Entrez.esearch(db="pubmed", term=request, retmax=0, usehistory='y')
+			except urllib2.HTTPError:
+				n += 1
+				if (n > 3):
+					write('NCBI is not happy, giving up')
+					return 1
+					
+				write('Oops\n')
+				continue
+			break
+
+			
+		records = Entrez.read(handle)
+		num_records = int(records['Count'])
+		webenv = records['WebEnv']
+		query_key = records['QueryKey']
+
+		write("Done. %d articles to consider.\n" % num_records)
+		write('webenv=%s, query_key=%s\n' % (webenv, str(query_key)))
+		write("Getting the PMIDs...\n")
+		n = 0
+		pmid_list = []
+		for start in range(0, num_records, search_chunk_size):
+			end = min(start+search_chunk_size, num_records)
+			while True:
+				write('Getting %d-%d\n' % (start, end))
+				try:
+					handle = Entrez.esearch(db="pubmed", retstart=start, retmax=search_chunk_size,
+						 webenv=webenv, query_key=query_key)
+					records = Entrez.read(handle)
+					new_pmid_list = records['IdList']
+					
+					pmid_list += new_pmid_list
+				except urllib2.HTTPError:
+					n += 1
+					if (n > 3):
+						write('NCBI is not happy, giving up')
+						return 1
+					write('Oops\n')
+					continue
+				break
+			pmid_cache[request] = pmid_list
+			h = open(pmid_cache_file + '.tmp', 'wr+')
+			json.dump(pmid_cache, h, sort_keys=True, indent=4)
+			h.close()
+			os.rename(pmid_cache_file + '.tmp', pmid_cache_file)
+
+	data = fetch_me_data(pmid_list)
+
+
+#	pmid_list = pmid_list_get()
+
+
+	labs_dict = defaultdict(list)
+
+	write('1\n')
+
+	n = 0
+	for pmid in pmid_list:
+		n += 1
+		if not n % 10000:
+			write(str(n) + '\n')
+		pubmed_data = load_pubmed_data(pmid)
+		labs = get_lab_list(pubmed_data)
+		if len(labs) > 0:
+			pubdate = get_citation_date(pubmed_data)
+			score = score_citation(pubmed_data)
+		for lab in labs:
+			labs_dict[lab].append({ 'PMID' : pmid,
+						'PibDate' : pubdate,
+						'Score' : score
+						})
+
+
+	write('2\n')
+	merged_labs_dict = merge_labs(labs_dict)
+
+
+	write('3\n')
+	#print json.dumps(merged_labs_dict, sort_keys=True, indent=4)
+
+	#print labs_dict
+	sorted_lab_list = sorted(merged_labs_dict, key=lambda entry: merged_labs_dict[entry]['Score'])
+
+	write('4\n')
+	for lab in sorted_lab_list:
+		print merged_labs_dict[lab]['Score'], lab
+	#	print json.dumps(labs_dict[lab], sort_keys=True, indent=4)
+
+	print "</pre>"
+	print "<p>Done!</p>"
+	print "</body></html>"
+
+if __name__ == "__main__":
+    main()
+
+
+#def pmid_list_get():
+#	h = open('files.txt')
+#	for line in h.readlines():
+#		pmid = line.split('.')
 #		print pmid[0]
-		yield pmid[0]
+#		yield pmid[0]
 
-#handle = Entrez.esearch(db="pubmed", term="\"synthetic biology\"", retmax=100000)
-#records = Entrez.read(handle)
-#pmid_list = records['IdList']
-#data = fetch_me_data(pmid_list)
-
-
-pmid_list = pmid_list_get()
-
-
-labs_dict = defaultdict(list)
-
-
-for pmid in pmid_list:
-	pubmed_data = load_pubmed_data(pmid)
-	labs = get_lab_list(pubmed_data)
-	if len(labs) > 0:
-		pubdate = get_citation_date(pubmed_data)
-		score = score_citation(pubmed_data)
-	for lab in labs:
-		labs_dict[lab].append({ 'PMID' : pmid,
-					'PibDate' : pubdate,
-					'Score' : score
-					})
-
-
-merged_labs_dict = merge_labs(labs_dict)
-
-
-#print json.dumps(merged_labs_dict, sort_keys=True, indent=4)
-
-#print labs_dict
-sorted_lab_list = sorted(merged_labs_dict, key=lambda entry: merged_labs_dict[entry]['Score'])
-
-for lab in sorted_lab_list:
-	print merged_labs_dict[lab]['Score'], lab
-#	print json.dumps(labs_dict[lab], sort_keys=True, indent=4)
 
 
 #print sorted_lab_list
