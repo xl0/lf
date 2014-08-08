@@ -24,12 +24,6 @@ global chunk_size
 chunk_size = 5000
 global search_chunk_size
 search_chunk_size = 100000
-global pmid_cache_file
-pmid_cache_file = 'pmid_cache.json'
-
-cachedir = "./cache/"
-def mkfilename(pmid):
-	return cachedir + pmid + ".json"
 
 rec = re.compile('[\w\.]+@[\w\.]$')
 
@@ -69,8 +63,6 @@ def sanitize_lab_name(lab):
 			# Break if no email, otherwise, look for an other.
 			break
 
-#	print "orig:", orig
-#	print "xxxx:", lab
 
 	return lab
 
@@ -123,11 +115,12 @@ def merge_labs(pmid_list, medline_extract):
 				'Score' : pub_score,
 				'Title' : extract['Title'],
 				'Author' : author_lab['Author'],
-				'Authors' : author_lab['Authors']}
+				'Authors' : author_lab['Authors'],
+				'Year' : extract['PubDate'][0]}
 
 			merged_lab_dict[key]['PubList'].append(merged_entry)
 			merged_lab_dict[key]['Score'] += pub_score
-	write('Found %d labs\n' % num_labs)
+	write('Found %d labs\n' % len(merged_lab_dict))
 	return merged_lab_dict	
 
 
@@ -142,7 +135,8 @@ def show_labs(merged_lab_dict, sorted_list):
 				'PMID' : pub['PMID'],
 				'Title' : pub['Title'],
 				'Author' : pub['Author'],
-				'Authors' : pub['Authors']
+				'Authors' : pub['Authors'],
+				'Year' : pub['Year']
 			}
 			split_lab_dict[pub['LabName']].append(entry)
 		
@@ -151,7 +145,7 @@ def show_labs(merged_lab_dict, sorted_list):
 		for lab_name in split_lab_dict.keys():
 			write('<li>%s<ul>\n' % ', '.join(lab_name))
 			for publication in split_lab_dict[lab_name]:
-				pub_string = ''
+				pub_string = str(publication['Year']) + ' '
 				for author in publication['Authors']:
 					if author == publication['Author']:
 						pub_string += "<b>" + author + " </b>"
@@ -238,7 +232,7 @@ def fetch_me_data(record_list, raw_medline_col):
 			data_list = Entrez.read(handle)
 			handle.close()
 			del handle
-			write('Done. Memorizing them...')
+			write('Done. Memorizing them ... ')
 
 			for entry in data_list:
 				if entry.has_key('MedlineCitation'):
@@ -344,10 +338,11 @@ def extract_data(pmid_list, raw_medline, medline_extract):
 		write('Need to analyze %d of %d articles...\n' % (len(need_to_extract), len(pmid_list)))
 		fetch_me_data(need_to_extract, raw_medline)
 
+		write('Analyzing...\n')
 		n = 0
-		write('need to extract: ' +  str(need_to_extract) + '\n')
+#		write('need to extract: ' +  str(need_to_extract) + '\n')
 		for data in raw_medline.find({'_id' : {'$in' : need_to_extract}}):
-			if not n % 1000:
+			if not n % 5000:
 				write(str(n) + '\n')
 			n += 1
 			entry = data['entry']
@@ -411,10 +406,9 @@ def run_search(request, request_cache):
 	if res:
 		pmid_list = res['pmid_list']
 		num_records = len(pmid_list)
-		write('Request found in cache.\n')
-		write('%d PMIDs to consider\n' % num_records)
+		write('Request found in cache. %d publications to consider\n' % num_records)
 	else:
-		write('Let me ask NCBI...\n')
+		write('Let me ask NCBI...')
 
 		# Do the request
 		n = 0
@@ -427,13 +421,13 @@ def run_search(request, request_cache):
 					write('\nNCBI is not happy, giving up.\n')
 					return None
 
-				write('Request to NCBI failed, trying again...\n')
+				write('\nRequest to NCBI failed, trying again...')
 				continue
 			break
 
 
 		records = Entrez.read(handle)
-		write(str(records) + '\n')
+#		write(str(records) + '\n')
 		num_records = int(records['Count'])
 		webenv = records['WebEnv']
 		query_key = records['QueryKey']
@@ -466,7 +460,7 @@ def run_search(request, request_cache):
 	return pmid_list
 
 def header(request):
-	write("Content-Type: text/html\n\n")
+	write("Content-Type: text/html; charset=utf-8\n\n")
 
 	h = open('index.html')
 	index = h.read()
