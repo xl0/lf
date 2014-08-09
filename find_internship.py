@@ -18,14 +18,13 @@ import gc
 import cgi
 import cgitb; cgitb.enable()
 
-article_half_life = 365 * 2
+# 3-year half life
+article_half_life = 365 * 3
 
 global chunk_size
 chunk_size = 5000
 global search_chunk_size
 search_chunk_size = 100000
-
-rec = re.compile('[\w\.]+@[\w\.]$')
 
 def write(string):
 	sys.stdout.write(string)
@@ -62,8 +61,6 @@ def sanitize_lab_name(lab):
 		else:
 			# Break if no email, otherwise, look for an other.
 			break
-
-
 	return lab
 
 def score_date(ymd_tuple):
@@ -77,12 +74,6 @@ def score_date(ymd_tuple):
 
 	return score
 
-def sum_pub_scores(pub_list):
-	score = 0
-	for pub in pub_list:
-		score += pub['Score']
-
-	return score
 
 def fact():
 	return {
@@ -104,12 +95,13 @@ def merge_labs(pmid_list, medline_extract):
 		# Not interested in books
 		if not extract['article']:
 			continue
-	
+
 		for author_lab in extract['AuthorLabList']:
 			num_labs += 1
 			# Use the first chunk of address as key
 			key = author_lab['ProcessedName'][0]
 			pub_score = score_date(extract['PubDate'])
+			pub_score *= extract['Impact']
 			merged_entry = {'LabName' : tuple(author_lab['ProcessedName']),
 				'PMID' : extract['_id'],
 				'Score' : pub_score,
@@ -121,7 +113,7 @@ def merge_labs(pmid_list, medline_extract):
 			merged_lab_dict[key]['PubList'].append(merged_entry)
 			merged_lab_dict[key]['Score'] += pub_score
 	write('Found %d labs\n' % len(merged_lab_dict))
-	return merged_lab_dict	
+	return merged_lab_dict
 
 
 def show_labs(merged_lab_dict, sorted_list):
@@ -139,7 +131,7 @@ def show_labs(merged_lab_dict, sorted_list):
 				'Year' : pub['Year']
 			}
 			split_lab_dict[pub['LabName']].append(entry)
-		
+
 		write('<li>' + lab_cluster + '\n')
 		write('<ul>')
 		for lab_name in split_lab_dict.keys():
@@ -162,7 +154,7 @@ def show_labs(merged_lab_dict, sorted_list):
 #			print ', '.join(lab_name)
 #			print split_lab_dict[lab_name]
 
-	
+
 
 #def split_labs(merged_lab_dict):
 #	split_lab_dict = defaultdict(dict)
@@ -180,11 +172,11 @@ def show_labs(merged_lab_dict, sorted_list):
 #			print lab
 #			split_la_entry = {'pubmed' : lab}
 #			split_lab_dict[key].append()
-		
+
 
 
 def fetch_me_data(record_list, raw_medline_col):
-	
+
 	cached_medline = raw_medline_col.distinct('_id')
 	need_to_fetch = list(set(record_list) - set(cached_medline))
 
@@ -266,7 +258,7 @@ def get_medline_author_list(entry):
 						forename = author.get('ForeName', '')
 						last_name = author.get('LastName', '')
 #						write('author = ' + forename + last_name + '\n')
-			
+
 						author_list.append((forename + ' ' + last_name, lab))
 	return author_list
 
@@ -303,14 +295,91 @@ def get_medline_title(entry):
 	article = article = citation['Article']
 	title = article['ArticleTitle']
 	return title
+def get_medline_journal(entry):
+	journal_data = entry['MedlineCitation']['Article']['Journal']
+	full_title = journal_data['Title']
 
-def score_citation(entry):
-	# For now, just score based on publication date
+	return full_title
+#	issn = None
 
-	date = get_citation_date(entry)
-	score = score_date(date)
+def get_medline_journal(entry):
+	return entry['MedlineCitation']['Article']['Journal']['Title']
 
-	return score
+global journal_ratings
+journal_ratings = {
+	'^science' : 31,
+	'^nature' : 42,
+	'proceedings of the national academy of sciences' : 10,
+	'nucleic acids research' : 9,
+	'journal of molecular biology' : 4,
+	'lab on a chip' : 7,
+	'^plos' : 5,
+	'trends in biotechnology' : 11,
+	'^bmc' : 3,
+	'molecular systems biology' : 11,
+	'acs chemical biology' : 5,
+	'embo reports' : 7,
+	'applied microbiology and biotechnology' : 4,
+	'accounts of chemical research' : 24,
+	'current opinion in chemical biology' : 7,
+	'^bioinformatics (oxford, england)' : 7,
+	'molecular cell' : 15,
+	'genome biology': 11,
+	'current opinion in biotechnology' : 8,
+	'international journal of medical microbiology' : 3,
+	'genome research' : 14,
+	'metabolic engineering' : 7,
+	'biotechnology and bioengineering' : 4,
+	'journal of biotechnology' : 3,
+	'biotechnology journal' : 4,
+	'molecular biosystems' : 3,
+	'journal of theoretical biology' : 2,
+	'^cell$' : 31,
+	'current opinion in microbiology' : 7,
+	'journal of biomedicine & biotechnology' : 3,
+	'journal of molecular cell biology' : 8,
+	'methods in molecular biology' : 1,
+	'journal of the american chemical society' : 11,
+	'systems and synthetic biology' : 1,
+	'applied and environmental microbiology' : 4,
+	'cell biochemistry and function' : 2,
+	'plant molecular biology' : 4,
+	'biotechnology advances' : 9,
+	'acs synthetic biology' : 5,
+	'molecular biology and evolution' : 14,
+	'Frontiers in' : 3.5,
+	'biotechnology for biofuels' : 6,
+	'proteins' : 3,
+	'physical review*and soft matter physics' : 2,
+	'molecular microbiology' : 5,
+	'journal of proteome research' : 5,
+	'biotechnology letters' : 2,
+	'journal of virology' : 6,
+	'journal of bacteriology' : 3,
+	'analytical chemistry' : 6,
+	'molecular pharmaceutics' : 5,
+	'microbial cell factories' : 4,
+	'the international journal of biochemistry & cell biology' : 5,
+	'genetics': 4,
+	'chemistry & biology' : 7,
+	'^plant physiology' : 9,
+	'^proteomics' : 4,
+	'protein & cell' : 3,
+	'biomaterials' : 8,
+	'methods in enzymology' : 2,
+	'current opinion in structural biology' : 9,
+	'journal of laboratory automation' : 1.5,
+	'^plant physiology' : 8
+}
+
+def rate_journal(title):
+	title = title.strip()
+	title = title.lower()
+
+	for key in journal_ratings.keys():
+		if re.match(key, title):
+			return journal_ratings[key]
+	return 0.5
 
 
 replacement_dict = [
@@ -330,7 +399,7 @@ def heuristic_fix(string, dictionary):
 		string = n_string.strip()
 	return string
 
-def extract_data(pmid_list, raw_medline, medline_extract):
+def extract_data(pmid_list, raw_medline, medline_extract, sjr):
 	cached_extract = medline_extract.distinct('_id')
 	need_to_extract = list(set(pmid_list) - set(cached_extract))
 
@@ -338,12 +407,11 @@ def extract_data(pmid_list, raw_medline, medline_extract):
 		write('Need to analyze %d of %d articles...\n' % (len(need_to_extract), len(pmid_list)))
 		fetch_me_data(need_to_extract, raw_medline)
 
-		write('Analyzing...\n')
 		n = 0
 #		write('need to extract: ' +  str(need_to_extract) + '\n')
 		for data in raw_medline.find({'_id' : {'$in' : need_to_extract}}):
 			if not n % 5000:
-				write(str(n) + '\n')
+				write("Analyzing %d - %d ...\n" % (n , min(n + 5000, len(need_to_extract))))
 			n += 1
 			entry = data['entry']
 			# If it's a book, just save the id to not look at it again.
@@ -385,12 +453,15 @@ def extract_data(pmid_list, raw_medline, medline_extract):
 						'Authors' : full_author_list
 				}
 				entry_list.append(new_entry)
+			title = get_medline_journal(entry)
+			impact = rate_journal(title)
 			pubdate = get_medline_date(entry)
 			title = get_medline_title(entry)
 			extract_entry = {'_id' : data['_id'],
 					'PubDate' : pubdate,
 					'Title' : title,
 					'AuthorLabList' : entry_list,
+					'Impact' : impact,
 					'article' : True}
 			medline_extract.save(extract_entry)
 		write('Done with premilinary analysis\n')
@@ -471,11 +542,11 @@ def header(request):
 	write("<html><body>\n")
 	write("<p>Meditating on the request...</p>\n")
 	write("<pre>\n")
-	
+
 def footer_good():
 	write("<p>Done!</p>\n")
 	write("</body></html>\n")
-	
+
 def footer_bad():
 	write("</pre>\n")
 	write("<p>Giving up. Try again later.</p>\n")
@@ -490,6 +561,7 @@ def main():
 	request_cache = db['request_cache']
 	raw_medline = db['raw_medline']
 	medline_extract = db['medline_extract']
+	sjr = db['sjr']
 
 	form = cgi.FieldStorage() # instantiate only once!
 	request = form.getfirst('q', None)
@@ -506,7 +578,7 @@ def main():
 		return
 	del request_cache
 
-	res = extract_data(pmid_list, raw_medline, medline_extract)
+	res = extract_data(pmid_list, raw_medline, medline_extract, sjr)
 	if not res:
 		footer_bad()
 		return
