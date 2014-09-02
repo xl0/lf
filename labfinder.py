@@ -402,8 +402,7 @@ def find_country(lab_name_array):
 	for element in reversed(lab_name_array):
 		for code in countries.keys():
 			for name_variant in countries[code]:
-				res = element.find(name_variant)
-				if not res == -1:
+				if re.match(name_varians, element)
 					codes.append(code)
 					found = True
 		if found:
