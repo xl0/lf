@@ -1,0 +1,29 @@
+<center>
+<table border=0>
+<tr>
+<td>
+<form name=f method=GET action="index.py">
+	<center>
+		Find your lab with LabFinder<font size=1> (alpha)</font><br>
+		<font size=2>
+			You can search using <a href="http://www.ncbi.nlm.nih.gov/pubmed/advanced">NCBI search terms</a></br>
+			For example: <font size=1 face="mono">(S.cerevisiae[Organism] OR S.pombe[Organism]) AND "synthetic biology"</font>
+		</font>
+	</center>
+	<center><input type=text name=q value="$request" size=100 framewidth=4>
+	<select name=c>
+		<option>All countries</option>
+		<option>test</option>
+		$country_options
+	</select>
+	<br></center>
+	<center><input type=submit value="LabFinder Search">
+	<input disabled type=submit name=sa value="I'm feeling lucky">
+	</br></center>
+</form>
+<center><font size=2><a href="https://github.com/xl0/lf/issues">Bugs/Feedback</a></font></center>
+</td>
+</tr>
+</table>
+</center>
+

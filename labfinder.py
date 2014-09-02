@@ -17,13 +17,14 @@ import time
 import gc
 import cgi
 import cgitb; cgitb.enable()
+from pymongo import MongoClient
+
+import datetime
 
 # 3-year half life
 article_half_life = 365 * 3
 
-global chunk_size
 chunk_size = 5000
-global search_chunk_size
 search_chunk_size = 100000
 
 def write(string):
@@ -81,7 +82,7 @@ def fact():
 		'Score' : 0
 	}
 
-def merge_labs(pmid_list, medline_extract):
+def merge_labs(pmid_list, medline_extract, country):
 	cached_extract = medline_extract.distinct('_id')
 	need_to_extract = list(set(pmid_list) - set(cached_extract))
 
@@ -97,6 +98,8 @@ def merge_labs(pmid_list, medline_extract):
 			continue
 
 		for author_lab in extract['AuthorLabList']:
+			if country and not country in author_lab['Country']:
+				continue
 			num_labs += 1
 			# Use the first chunk of address as key
 			key = author_lab['ProcessedName'][0]
@@ -106,6 +109,7 @@ def merge_labs(pmid_list, medline_extract):
 				'PMID' : extract['_id'],
 				'Score' : pub_score,
 				'Title' : extract['Title'],
+				'Journal' : extract['Journal'],
 				'Author' : author_lab['Author'],
 				'Authors' : author_lab['Authors'],
 				'Year' : extract['PubDate'][0]}
@@ -123,26 +127,25 @@ def show_labs(merged_lab_dict, sorted_list):
 		pub_list = merged_lab_dict[lab_cluster]['PubList']
 
 		for pub in pub_list:
-			entry = {
-				'PMID' : pub['PMID'],
-				'Title' : pub['Title'],
-				'Author' : pub['Author'],
-				'Authors' : pub['Authors'],
-				'Year' : pub['Year']
-			}
-			split_lab_dict[pub['LabName']].append(entry)
+			split_lab_dict[pub['LabName']].append(pub)
 
 		write('<li>' + lab_cluster + '\n')
 		write('<ul>')
+#		print json.dumps(split_lab_dict, sort_keys=True, indent=4)
+
 		for lab_name in split_lab_dict.keys():
+
+#			sorted_publication_list = sorted(split_lab_dict[lab_name], key=lambda key: merged_lab_dict[key]['Score'])
+#			for i in sorted_publication_list:
+#				print i, split_lab_dict[key]
 			write('<li>%s<ul>\n' % ', '.join(lab_name))
 			for publication in split_lab_dict[lab_name]:
-				pub_string = str(publication['Year']) + ' '
+				pub_string =  str(publication['Year']) + ' ' + publication['Journal'] + ': '
 				for author in publication['Authors']:
 					if author == publication['Author']:
-						pub_string += "<b>" + author + " </b>"
+						pub_string += "<b>" + author + ", </b>"
 					else:
-						pub_string += author + ' '
+						pub_string += author + ', '
 				pub_string += '<a href=\"http://www.ncbi.nlm.nih.gov/pubmed/%s\">' % publication['PMID']
 				pub_string += publication['Title'] + '</a>\n'
 				write('<li>' + pub_string.encode('utf-8') + '</li>')
@@ -150,30 +153,6 @@ def show_labs(merged_lab_dict, sorted_list):
 		write('</ul></li>')
 
 	write('</ol>')
-
-#			print ', '.join(lab_name)
-#			print split_lab_dict[lab_name]
-
-
-
-#def split_labs(merged_lab_dict):
-#	split_lab_dict = defaultdict(dict)
-#	for key in merged_lab_dict.keys():
-#		labs = merged_lab_dict[key]
-#		write('key ' + str(key) + str(labs) + '\n')
-#		variants = defaultdict(list)
-#		for lab in labs:
-#			new_entry = {
-#				'pubmed' : lab['pubmed']
-#			}
-
-
-
-#			print lab
-#			split_la_entry = {'pubmed' : lab}
-#			split_lab_dict[key].append()
-
-
 
 def fetch_me_data(record_list, raw_medline_col):
 
@@ -272,7 +251,7 @@ def month_to_int(month):
 		'Jun' : 6,
 		'Jul' : 7,
 		'Aug' : 8,
-		'Sep' : 9, 
+		'Sep' : 9,
 		'Oct' : 10,
 		'Nov' : 11,
 		'Dec' : 12
@@ -386,7 +365,8 @@ replacement_dict = [
 	('[De]ept\.?', 'Department'),
 	('[Ll]ab\.?\s', 'Laboratory '),
 	('\s&\s', ' and '),
-	('Electronic address', '')
+	('Electronic address', ''),
+	('[Ee]mail', '')
 ]
 
 def heuristic_fix(string, dictionary):
@@ -398,6 +378,38 @@ def heuristic_fix(string, dictionary):
 #			print n_string
 		string = n_string.strip()
 	return string
+
+def find_country(lab_name_array):
+	codes = []
+	found = False
+
+	countries = json.load(open('countries.json'))
+	for element in reversed(lab_name_array):
+		element = element.lower()
+		for code in countries.keys():
+			for name_variant in countries[code]:
+				res = element.find(name_variant.lower())
+				if not res == -1:
+					codes.append(code)
+					found = True
+		if found:
+			return codes
+
+	# Some specially talanted scientists only put the state/city,
+	# try the US states and some popular cities around the world.
+
+	countries = json.load(open('states.json'))
+	for element in reversed(lab_name_array):
+		for code in countries.keys():
+			for name_variant in countries[code]:
+				res = element.find(name_variant)
+				if not res == -1:
+					codes.append(code)
+					found = True
+		if found:
+			return codes
+
+	return codes
 
 def extract_data(pmid_list, raw_medline, medline_extract, sjr):
 	cached_extract = medline_extract.distinct('_id')
@@ -445,16 +457,17 @@ def extract_data(pmid_list, raw_medline, medline_extract, sjr):
 					tmp = heuristic_fix(tmp, replacement_dict)
 					tmp = tmp.strip()
 					lab_name_array.append(tmp)
-
+				country = find_country(lab_name_array)
 
 				new_entry = { 'ProcessedName' : lab_name_array,
 						'RawName' : author[1],
 						'Author' : author[0],
-						'Authors' : full_author_list
+						'Authors' : full_author_list,
+						'Country' : country
 				}
 				entry_list.append(new_entry)
-			title = get_medline_journal(entry)
-			impact = rate_journal(title)
+			journal = get_medline_journal(entry)
+			impact = rate_journal(journal)
 			pubdate = get_medline_date(entry)
 			title = get_medline_title(entry)
 			extract_entry = {'_id' : data['_id'],
@@ -462,7 +475,9 @@ def extract_data(pmid_list, raw_medline, medline_extract, sjr):
 					'Title' : title,
 					'AuthorLabList' : entry_list,
 					'Impact' : impact,
-					'article' : True}
+					'Journal' : journal,
+					'article' : True,
+					}
 			medline_extract.save(extract_entry)
 		write('Done with premilinary analysis\n')
 	else:
@@ -530,30 +545,8 @@ def run_search(request, request_cache):
 
 	return pmid_list
 
-def header(request):
-	write("Content-Type: text/html; charset=utf-8\n\n")
 
-	h = open('index.html')
-	index = h.read()
-	index = re.sub("name=q value=\"\"", "name=q value=\"%s\"" % request, index)
-
-	write(index)
-
-	write("<html><body>\n")
-	write("<p>Meditating on the request...</p>\n")
-	write("<pre>\n")
-
-def footer_good():
-	write("<p>Done!</p>\n")
-	write("</body></html>\n")
-
-def footer_bad():
-	write("</pre>\n")
-	write("<p>Giving up. Try again later.</p>\n")
-	write("</body></html>\n")
-
-def main():
-	from pymongo import MongoClient
+def search(request, country):
 
 	mongo = MongoClient()
 	db = mongo['labfinder']
@@ -563,27 +556,16 @@ def main():
 	medline_extract = db['medline_extract']
 	sjr = db['sjr']
 
-	form = cgi.FieldStorage() # instantiate only once!
-	request = form.getfirst('q', None)
-
-	# Avoid script injection escaping the user input
-	request = cgi.escape(request)
-
-	request_escaped_quotes = cgi.escape(request, quote=True)
-	header(request_escaped_quotes)
-
 	pmid_list = run_search(request, request_cache)
 	if not pmid_list:
-		footer_bad()
-		return
+		return False
 	del request_cache
 
 	res = extract_data(pmid_list, raw_medline, medline_extract, sjr)
 	if not res:
-		footer_bad()
-		return
+		return False
 
-	merged_lab_dict = merge_labs(pmid_list, medline_extract)
+	merged_lab_dict = merge_labs(pmid_list, medline_extract, country)
 #	for i in merged_lab_dict.keys():
 #		write(i + json.dumps(merged_lab_dict[i], sort_keys=True, indent=2) + '\n')
 
@@ -591,19 +573,16 @@ def main():
 	sorted_lab_list = sorted(merged_lab_dict, key=lambda lab_key: merged_lab_dict[lab_key]['Score'], reverse=True)
 
 	write('</pre>')
+
 	show_labs(merged_lab_dict, sorted_lab_list)
 
 #	for i in sorted_lab_list:
 #		print merged_lab_dict[i]['Score'], i
 #	order_list = 
 
-
-	del pmid_list
-	del medline_extract
-
 #	split_lab_dict = split_labs(merged_lab_dict)
-	footer_good()
 
+	return True
 
 
 #	data = fetch_me_data(pmid_list, raw_medline)
@@ -648,6 +627,95 @@ def main():
 		print merged_labs_dict[lab]['Score'], lab
 	#	print json.dumps(labs_dict[lab], sort_keys=True, indent=4)
 '''
+
+def header(request, country_menu):
+	write("Content-Type: text/html; charset=utf-8\n\n")
+
+	h = open('template_index.html')
+	index = h.read()
+
+	index = re.sub('\$request', request, index)
+	index = re.sub('\$country_options', country_menu, index)
+
+	write('<html><body>\n')
+	write(index)
+
+
+def footer_good():
+	write('<p>Done!</p>\n')
+	write('</body></html>\n')
+
+def footer_bad():
+	write('</pre>\n')
+	write('<p>Giving up. Try again later.</p>\n')
+	write('</body></html>\n')
+
+def log(q, c, res):
+	client = MongoClient()
+	log_col = client['labfinder']['request_log']
+
+	remote_addr = cgi.escape(os.environ['REMOTE_ADDR'])
+	query_string = cgi.escape(os.environ['QUERY_STRING'])
+	user_agent = cgi.escape(os.environ['HTTP_USER_AGENT'])
+
+
+	log_col.insert({
+		'request' : q,
+		'country' : c,
+		'remote_addr' : remote_addr,
+		'query_string' : query_string,
+		'user_agent' : user_agent,
+		'timedate' : datetime.datetime.utcnow() 
+	})
+
+
+def main():
+
+	countries = json.load(open('countries.json'))
+
+	form = cgi.FieldStorage() # instantiate only once!
+	request = form.getfirst('q', '')
+	country = form.getfirst('c', '')
+	# Avoid script injection escaping the user input
+	request = cgi.escape(request)
+#	country = cgi.escape(country)
+
+	country_menu = ""
+
+	country_list = []
+	country_code = None
+
+	for code in countries:
+		country_list.append(countries[code][0])
+		if countries[code][0] == country:
+			country_code = code
+
+
+	country_list = sorted(country_list)
+
+	for name in country_list:
+		if country == name:
+			country_menu += '<option selected>%s</option>\n' % name
+		else:
+			country_menu += '<option>%s</option>\n' % name
+
+
+	request_escaped_quotes = cgi.escape(request, quote=True)
+	header(request_escaped_quotes, country_menu)
+
+	res = False
+	if not request == '':
+		write('<p>Meditating on the request...</p>\n')
+		write('<pre>\n')
+		res = search(request, country_code)
+		if res:
+			footer_good()
+		else:
+			footer_bad()
+
+	if not request == '':
+		log(request, country, res)
+
 if __name__ == "__main__":
     main()
 
