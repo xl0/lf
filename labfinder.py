@@ -24,7 +24,7 @@ import datetime
 # 3-year half life
 article_half_life = 365 * 3
 
-chunk_size = 5000
+chunk_size = 1000
 search_chunk_size = 100000
 
 def write(string):
@@ -402,7 +402,7 @@ def find_country(lab_name_array):
 	for element in reversed(lab_name_array):
 		for code in countries.keys():
 			for name_variant in countries[code]:
-				if re.match(name_varians, element)
+				if re.match(name_variant, element):
 					codes.append(code)
 					found = True
 		if found:
